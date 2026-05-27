@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="56" fill="#16161e"/>
+  <!-- paper-plane: upper wing (light) + lower flap (darker) -->
+  <path d="M214 42 L42 114 L110 142 Z" fill="#7aa2f7"/>
+  <path d="M214 42 L110 142 L130 214 L158 166 Z" fill="#5a7fd6"/>
+</svg>

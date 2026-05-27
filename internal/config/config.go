@@ -1,0 +1,163 @@
+// Package config loads and persists user settings under the XDG config dir.
+package config
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"os"
+	"path/filepath"
+
+	"omarchy-send/internal/protocol"
+	"omarchy-send/internal/security"
+)
+
+// Config is the persisted user configuration.
+type Config struct {
+	Alias       string `json:"alias"`
+	Fingerprint string `json:"fingerprint"`
+	Port        int    `json:"port"`
+	ReceiveDir  string `json:"receiveDir"`
+	DeviceModel string `json:"deviceModel"`
+	DeviceType  string `json:"deviceType"`
+	Protocol    string `json:"protocol"`
+	AutoAccept  bool   `json:"autoAccept"`
+	PIN         string `json:"pin"`     // if set, senders must supply it
+	NoIcons     bool   `json:"noIcons"` // hide Nerd Font device icons (non-NF terminals)
+
+	// TLS identity for encrypted (HTTPS) mode, generated once and persisted.
+	CertPEM string `json:"certPem"`
+	KeyPEM  string `json:"keyPem"`
+
+	// path is where this config was loaded from / will be saved to.
+	path string `json:"-"`
+}
+
+// Dir returns the config directory, e.g. ~/.config/omarchy-send.
+func Dir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "omarchy-send"), nil
+}
+
+// defaults returns a Config populated with sensible defaults for this host.
+func defaults() Config {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "arch"
+	}
+	home, _ := os.UserHomeDir()
+	return Config{
+		Alias:       host,
+		Port:        protocol.DefaultPort,
+		ReceiveDir:  filepath.Join(home, "Omarchy-Send"),
+		DeviceModel: host,
+		DeviceType:  string(protocol.DeviceServer),
+		Protocol:    "https",
+		AutoAccept:  false,
+	}
+}
+
+// Load reads the config from dir/config.json, filling defaults for missing
+// fields. If the file does not exist it is created. A fingerprint is generated
+// and persisted on first run.
+func Load() (Config, error) {
+	dir, err := Dir()
+	if err != nil {
+		return Config{}, err
+	}
+	path := filepath.Join(dir, "config.json")
+
+	cfg := defaults()
+	cfg.path = path
+
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return Config{}, err
+		}
+		cfg.path = path
+	case !os.IsNotExist(err):
+		return Config{}, err
+	}
+
+	// Backfill anything still empty after unmarshalling an older/partial file.
+	d := defaults()
+	if cfg.Alias == "" {
+		cfg.Alias = d.Alias
+	}
+	if cfg.Port == 0 {
+		cfg.Port = d.Port
+	}
+	if cfg.ReceiveDir == "" {
+		cfg.ReceiveDir = d.ReceiveDir
+	}
+	if cfg.DeviceType == "" {
+		cfg.DeviceType = d.DeviceType
+	}
+	if cfg.Protocol == "" {
+		cfg.Protocol = d.Protocol
+	}
+
+	// Generate the TLS identity once. The fingerprint is derived from the
+	// certificate (uppercase-hex SHA-256 of its DER), so it is regenerated
+	// alongside the cert and persisted.
+	if cfg.CertPEM == "" || cfg.KeyPEM == "" {
+		id, err := security.Generate()
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.CertPEM = id.CertPEM
+		cfg.KeyPEM = id.KeyPEM
+		cfg.Fingerprint = id.Fingerprint
+	}
+
+	if err := cfg.Save(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// Save atomically writes the config (temp file + rename).
+func (c Config) Save() error {
+	if c.path == "" {
+		dir, err := Dir()
+		if err != nil {
+			return err
+		}
+		c.path = filepath.Join(dir, "config.json")
+	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := c.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.path)
+}
+
+// DeviceInfo builds the protocol announcement payload from this config. The
+// caller sets Announce as appropriate.
+func (c Config) DeviceInfo() protocol.DeviceInfo {
+	return protocol.DeviceInfo{
+		Alias:       c.Alias,
+		Version:     protocol.ProtocolVersion,
+		DeviceModel: c.DeviceModel,
+		DeviceType:  protocol.DeviceType(c.DeviceType),
+		Fingerprint: c.Fingerprint,
+		Port:        c.Port,
+		Protocol:    c.Protocol,
+	}
+}
+
+// TLSCertificate returns the parsed TLS keypair for serving HTTPS.
+func (c Config) TLSCertificate() (tls.Certificate, error) {
+	return tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM))
+}
