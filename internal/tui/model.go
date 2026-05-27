@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"omarchy-send/internal/app"
+	"omarchy-send/internal/clipboard"
 	"omarchy-send/internal/config"
 	"omarchy-send/internal/discovery"
 	"omarchy-send/internal/server"
@@ -32,7 +33,7 @@ import (
 type Controller interface {
 	Announce()
 	Send(peer discovery.Peer, paths []string, pin string)
-	SendMessage(peer discovery.Peer, text string)
+	SendMessage(peer discovery.Peer, text, pin string)
 	SetAutoAccept(bool)
 	SetAlias(string)
 	SetReceiveDir(string)
@@ -102,11 +103,14 @@ type Model struct {
 	editFocus  int
 	editInputs []textinput.Model // 0=alias, 1=receive dir, 2=pin
 
-	// PIN prompt state for sending to a PIN-protected peer.
-	pinInput  textinput.Model
-	showPin   bool
-	sendPeer  *discovery.Peer
-	sendPaths []string
+	// PIN prompt state for sending to a PIN-protected peer. pendingMsg is set
+	// (and sendPaths nil) when the pending send is a message rather than files,
+	// so the PIN retry resends the right thing.
+	pinInput   textinput.Model
+	showPin    bool
+	sendPeer   *discovery.Peer
+	sendPaths  []string
+	pendingMsg string
 
 	// Messages tab + compose modal.
 	msgList      list.Model
@@ -256,8 +260,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCompose(msg)
 		}
 		if m.readingMsg != nil {
-			if k := msg.String(); k == "esc" || k == "q" || k == "enter" {
+			switch msg.String() {
+			case "esc", "q", "enter":
 				m.readingMsg = nil
+			case "y":
+				if err := clipboard.Write(m.readingMsg.Text); err != nil {
+					m.notice = "clipboard unavailable"
+				} else {
+					m.notice = "copied to clipboard"
+				}
 			}
 			return m, nil
 		}
@@ -353,6 +364,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "v":
+			// Send the clipboard: open compose to the selected device,
+			// pre-filled with the clipboard text, so it can be reviewed first.
+			if m.screen == screenPeers {
+				if it, ok := m.peerList.SelectedItem().(peerItem); ok {
+					text, err := clipboard.Read()
+					if err != nil {
+						m.notice = "clipboard unavailable"
+						return m, nil
+					}
+					if strings.TrimSpace(text) == "" {
+						m.notice = "clipboard is empty"
+						return m, nil
+					}
+					peer := it.p
+					m.composeTo = &peer
+					m.composing = true
+					m.composeInput.SetValue(text)
+					m.composeInput.CursorEnd()
+					m.composeInput.Focus()
+					return m, textinput.Blink
+				}
+			}
+			return m, nil
+		case "y":
+			// Copy the selected/open message to the clipboard.
+			if m.screen == screenMessages {
+				var text string
+				if m.readingMsg != nil {
+					text = m.readingMsg.Text
+				} else if it, ok := m.msgList.SelectedItem().(msgItem); ok {
+					text = it.m.Text
+				}
+				if text == "" {
+					return m, nil
+				}
+				if err := clipboard.Write(text); err != nil {
+					m.notice = "clipboard unavailable"
+				} else {
+					m.notice = "copied to clipboard"
+				}
+			}
+			return m, nil
 		case "a":
 			if m.screen == screenManage {
 				m.toggleMarkAll()
@@ -430,8 +484,13 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		text := strings.TrimSpace(m.composeInput.Value())
 		if text != "" && m.composeTo != nil && m.ctrl != nil {
-			m.ctrl.SendMessage(*m.composeTo, text)
-			m.notice = "✉ message sent to " + m.composeTo.Info.Alias
+			peer := *m.composeTo
+			// Remember the pending message so a PIN prompt can resend it.
+			m.sendPeer = &peer
+			m.sendPaths = nil
+			m.pendingMsg = text
+			m.ctrl.SendMessage(peer, text, "")
+			m.notice = "✉ message sent to " + peer.Info.Alias
 		}
 		m.composing = false
 		m.composeTo = nil
@@ -482,6 +541,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.staged) > 0 && m.target != nil && m.ctrl != nil {
 			m.sendPeer = m.target
 			m.sendPaths = m.staged
+			m.pendingMsg = "" // this is a file send, not a message
 			m.ctrl.Send(*m.target, m.staged, "")
 			m.staged = nil
 			m.screen = screenTransfers
@@ -587,8 +647,14 @@ func (m Model) updatePin(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showPin = false
 		m.pinInput.Blur()
 		if pin != "" && m.sendPeer != nil && m.ctrl != nil {
-			m.ctrl.Send(*m.sendPeer, m.sendPaths, pin)
-			m.screen = screenTransfers
+			if m.pendingMsg != "" {
+				m.ctrl.SendMessage(*m.sendPeer, m.pendingMsg, pin)
+				m.notice = "✉ message sent to " + m.sendPeer.Info.Alias
+				m.pendingMsg = ""
+			} else {
+				m.ctrl.Send(*m.sendPeer, m.sendPaths, pin)
+				m.screen = screenTransfers
+			}
 		}
 		return m, nil
 	case "esc", "ctrl+c":
@@ -1092,7 +1158,7 @@ func (m Model) footerText() string {
 	case m.composing:
 		return "enter send · esc cancel"
 	case m.readingMsg != nil:
-		return "esc/enter close"
+		return "y copy · esc/enter close"
 	case m.confirmDel:
 		return "y/enter delete · n/esc cancel"
 	case m.editing:
@@ -1100,13 +1166,13 @@ func (m Model) footerText() string {
 	case m.screen == screenPicker:
 		return "enter stage file · a add folder · backspace unstage · S send · esc back"
 	case m.screen == screenPeers:
-		return "enter send-to · m message · r refresh · / filter · 1-5 switch · q quit"
+		return "enter send-to · m message · v send-clipboard · r refresh · / filter · 1-5 · q quit"
 	case m.screen == screenTransfers:
 		return "c clear finished · 1-5 switch · q quit"
 	case m.screen == screenManage:
 		return "space mark · a all · d delete · r refresh · / filter · 1-5 switch · q quit"
 	case m.screen == screenMessages:
-		return "enter read · d delete · 1-5 switch · q quit"
+		return "enter read · y copy · d delete · 1-5 switch · q quit"
 	case m.screen == screenSettings:
 		return "e edit · a auto-accept · i icons · 1-5 switch · q quit"
 	}

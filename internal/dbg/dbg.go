@@ -4,6 +4,7 @@ package dbg
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -25,6 +26,18 @@ func setup() {
 		return
 	}
 	f = file
+}
+
+// Writer returns the debug log file if $OMARCHY_SEND_LOG is set, else io.Discard.
+// It's used to redirect the standard logger away from the terminal so stray
+// stdlib logging (e.g. net/http's "unsolicited response" notice) can't corrupt
+// the TUI; the output is still captured in the debug log when enabled.
+func Writer() io.Writer {
+	once.Do(setup)
+	if f == nil {
+		return io.Discard
+	}
+	return f
 }
 
 // Logf appends a timestamped line to the debug log if $OMARCHY_SEND_LOG is set.

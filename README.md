@@ -16,7 +16,10 @@ LocalSend mobile and desktop apps on the same LAN, including their default
   picker, and upload them with progress, rate and ETA. Folders are sent
   recursively with their structure preserved on the receiver.
 - **Messages** — send a plain-text message to a peer (LocalSend-compatible) and
-  read messages others send you in a dedicated Messages tab.
+  read messages others send you in a dedicated Messages tab. Send the system
+  clipboard as a message, or copy a received one back to the clipboard (uses
+  `wl-clipboard`/`xclip`/`xsel`, or tmux's paste buffer when run inside tmux on
+  a headless box).
 - **Manage** — browse the receive folder, mark received files (or whole folders)
   and delete the ones you no longer want, behind a confirmation prompt.
 - **HTTPS** — generates a self-signed certificate whose fingerprint matches the
@@ -94,12 +97,13 @@ omarchy-send --auto-accept --pin 2468
 ### Keys
 
 - `1`–`5` or `tab` — switch between Devices / Transfers / Manage / Messages / Settings
-- Peers: `enter` send to the selected peer · `m` message the selected peer · `r` refresh · `/` filter
+- Peers: `enter` send to the selected peer · `m` message · `v` send clipboard · `r` refresh · `/` filter
+- PIN-protected peers: messages prompt for the PIN and retry, just like file sends
 - Send picker: `enter` stage a file · `a` add the current folder · `backspace` unstage · `S` send · `esc` back
 - Incoming prompt: `y` accept · `n` reject
 - Transfers: `c` clear finished
-- Messages: `enter` read the full message · `d` delete it (incoming messages
-  arrive automatically, with a footer notice)
+- Messages: `enter` read the full message · `y` copy it to the clipboard · `d`
+  delete it (incoming messages arrive automatically, with a footer notice)
 - Manage: `space` mark file/folder · `a` mark all · `d` delete marked (or the one
   under the cursor) · `r` refresh · `/` filter — deletion asks to confirm first
 - Settings: `e` edit (alias / receive dir / PIN) · `a` toggle auto-accept

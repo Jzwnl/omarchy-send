@@ -33,7 +33,7 @@ func TestSendMessageEndToEnd(t *testing.T) {
 
 	sender := New(protocol.DeviceInfo{Alias: "sender", Fingerprint: "snd1", Version: "2.1", Protocol: "http"})
 	peer := discovery.Peer{Info: recvInfo, IP: "127.0.0.1"}
-	sender.SendMessage(peer, "hello over the wire\nsecond line")
+	sender.SendMessage(peer, "hello over the wire\nsecond line", "")
 
 	select {
 	case m := <-srv.Messages():

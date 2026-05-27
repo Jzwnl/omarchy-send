@@ -96,12 +96,13 @@ func (s *Sender) Send(peer discovery.Peer, paths []string, pin string) {
 
 // SendMessage sends a plain-text message to peer (LocalSend "send message":
 // one text file whose content rides in the preview field, so nothing is
-// uploaded). Errors are reported on Events() as an outgoing Error.
-func (s *Sender) SendMessage(peer discovery.Peer, text string) {
-	go s.sendMessage(peer, text)
+// uploaded). pin may be empty; supply it when the peer requires one. Errors —
+// including ErrPinRequired — are reported on Events() as an outgoing Error.
+func (s *Sender) SendMessage(peer discovery.Peer, text, pin string) {
+	go s.sendMessage(peer, text, pin)
 }
 
-func (s *Sender) sendMessage(peer discovery.Peer, text string) {
+func (s *Sender) sendMessage(peer discovery.Peer, text, pin string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -115,7 +116,7 @@ func (s *Sender) sendMessage(peer discovery.Peer, text string) {
 			Preview:  text,
 		},
 	}
-	if _, err := s.prepareUpload(ctx, s.url(peer), files, ""); err != nil {
+	if _, err := s.prepareUpload(ctx, s.url(peer), files, pin); err != nil {
 		dbg.Logf("send message to %s failed: %v", peer.IP, err)
 		s.emit(transfer.Event{Dir: transfer.Outgoing, Kind: transfer.Error, FileName: "message", Err: err})
 	}

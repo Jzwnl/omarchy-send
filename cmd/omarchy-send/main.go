@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +15,7 @@ import (
 	"omarchy-send/internal/app"
 	"omarchy-send/internal/client"
 	"omarchy-send/internal/config"
+	"omarchy-send/internal/dbg"
 	"omarchy-send/internal/discovery"
 	"omarchy-send/internal/server"
 	"omarchy-send/internal/tui"
@@ -28,10 +30,12 @@ type controller struct {
 
 func (c controller) Announce()                                         { c.disc.Announce() }
 func (c controller) Send(p discovery.Peer, paths []string, pin string) { c.sender.Send(p, paths, pin) }
-func (c controller) SendMessage(p discovery.Peer, text string)         { c.sender.SendMessage(p, text) }
-func (c controller) SetAutoAccept(v bool)                              { c.srv.SetAutoAccept(v) }
-func (c controller) SetPIN(pin string)                                 { c.srv.SetPIN(pin) }
-func (c controller) SetReceiveDir(dir string)                          { c.srv.SetReceiveDir(dir) }
+func (c controller) SendMessage(p discovery.Peer, text, pin string) {
+	c.sender.SendMessage(p, text, pin)
+}
+func (c controller) SetAutoAccept(v bool)     { c.srv.SetAutoAccept(v) }
+func (c controller) SetPIN(pin string)        { c.srv.SetPIN(pin) }
+func (c controller) SetReceiveDir(dir string) { c.srv.SetReceiveDir(dir) }
 
 // SetAlias updates the alias across all services and re-announces it.
 func (c controller) SetAlias(alias string) {
@@ -51,6 +55,11 @@ func main() {
 		noIcons   = flag.Bool("no-icons", false, "hide Nerd Font device icons (for non-Nerd-Font terminals)")
 	)
 	flag.Parse()
+
+	// The TUI owns the terminal, so keep stray stdlib logging (e.g. net/http's
+	// "unsolicited response on idle channel" notice) off the screen — route it
+	// to the debug log when enabled, otherwise discard it.
+	log.SetOutput(dbg.Writer())
 
 	cfg, err := config.Load()
 	if err != nil {
