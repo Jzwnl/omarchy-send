@@ -32,6 +32,7 @@ import (
 type Controller interface {
 	Announce()
 	Send(peer discovery.Peer, paths []string, pin string)
+	SendMessage(peer discovery.Peer, text string)
 	SetAutoAccept(bool)
 	SetAlias(string)
 	SetReceiveDir(string)
@@ -44,10 +45,11 @@ const (
 	screenPeers screen = iota
 	screenTransfers
 	screenManage
+	screenMessages
 	screenSettings
 	screenPicker // entered from Peers; not part of the tab rotation
 
-	tabCount = 4 // Devices · Transfers · Manage · Settings
+	tabCount = 5 // Devices · Transfers · Manage · Messages · Settings
 )
 
 // xfer is one row in the transfers view.
@@ -106,6 +108,15 @@ type Model struct {
 	sendPeer  *discovery.Peer
 	sendPaths []string
 
+	// Messages tab + compose modal.
+	msgList      list.Model
+	messages     []server.ReceivedMessage
+	composing    bool
+	composeInput textinput.Model
+	composeTo    *discovery.Peer
+	readingMsg   *server.ReceivedMessage // non-nil while reading a message full-screen
+	notice       string                  // transient footer flash (e.g. "message sent")
+
 	width, height int
 	quitting      bool
 }
@@ -125,6 +136,11 @@ func New(cfg config.Config, ctrl Controller) Model {
 	fl.SetShowHelp(false)
 	fl.SetShowStatusBar(false)
 
+	ml := list.New(nil, msgDelegate{}, 0, 0)
+	ml.SetShowTitle(false)
+	ml.SetShowHelp(false)
+	ml.SetShowStatusBar(false)
+
 	fp := filepicker.New()
 	if home, err := os.UserHomeDir(); err == nil {
 		fp.CurrentDirectory = home
@@ -143,6 +159,11 @@ func New(cfg config.Config, ctrl Controller) Model {
 	pin.Placeholder = "PIN"
 	pin.CharLimit = 16
 
+	compose := textinput.New()
+	compose.Placeholder = "type a message"
+	compose.CharLimit = 2000
+	compose.Width = 48
+
 	mkInput := func(placeholder string, limit int) textinput.Model {
 		ti := textinput.New()
 		ti.Placeholder = placeholder
@@ -157,20 +178,22 @@ func New(cfg config.Config, ctrl Controller) Model {
 	}
 
 	return Model{
-		cfg:        cfg,
-		ctrl:       ctrl,
-		ips:        server.LocalIPs(),
-		screen:     screenPeers,
-		peerList:   l,
-		peers:      make(map[string]discovery.Peer),
-		fileList:   fl,
-		marked:     marked,
-		picker:     fp,
-		bar:        progress.New(progress.WithDefaultGradient(), progress.WithWidth(22)),
-		xferIndex:  make(map[string]*xfer),
-		autoAccept: cfg.AutoAccept,
-		pinInput:   pin,
-		editInputs: editInputs,
+		cfg:          cfg,
+		ctrl:         ctrl,
+		ips:          server.LocalIPs(),
+		screen:       screenPeers,
+		peerList:     l,
+		peers:        make(map[string]discovery.Peer),
+		fileList:     fl,
+		marked:       marked,
+		picker:       fp,
+		bar:          progress.New(progress.WithDefaultGradient(), progress.WithWidth(22)),
+		xferIndex:    make(map[string]*xfer),
+		autoAccept:   cfg.AutoAccept,
+		pinInput:     pin,
+		editInputs:   editInputs,
+		msgList:      ml,
+		composeInput: compose,
 	}
 }
 
@@ -187,6 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.peerList.SetSize(iw, lh)
 		m.fileList.SetSize(iw, lh)
+		m.msgList.SetSize(iw, lh)
 		if ph := ih - 8; ph >= 3 {
 			m.picker.Height = ph
 		} else {
@@ -220,7 +244,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyTransfer(msg.Ev)
 		return m, nil
 
+	case app.MessageMsg:
+		m.messages = append([]server.ReceivedMessage{msg.Msg}, m.messages...)
+		m.msgList.SetItems(m.msgItems())
+		m.notice = "✉ message from " + nonEmpty(msg.Msg.From, "a device")
+		return m, nil
+
 	case tea.KeyMsg:
+		m.notice = "" // any key clears a transient footer notice
+		if m.composing {
+			return m.updateCompose(msg)
+		}
+		if m.readingMsg != nil {
+			if k := msg.String(); k == "esc" || k == "q" || k == "enter" {
+				m.readingMsg = nil
+			}
+			return m, nil
+		}
 		if m.showPin {
 			return m.updatePin(msg)
 		}
@@ -257,6 +297,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshManage()
 			return m, nil
 		case "4":
+			m.screen = screenMessages
+			return m, nil
+		case "5":
 			m.screen = screenSettings
 			return m, nil
 		case "tab":
@@ -293,6 +336,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen == screenManage {
 				return m.requestDelete()
 			}
+			if m.screen == screenMessages {
+				m.deleteSelectedMessage()
+			}
+			return m, nil
+		case "m":
+			// Compose a message to the highlighted device.
+			if m.screen == screenPeers {
+				if it, ok := m.peerList.SelectedItem().(peerItem); ok {
+					peer := it.p
+					m.composeTo = &peer
+					m.composing = true
+					m.composeInput.SetValue("")
+					m.composeInput.Focus()
+					return m, textinput.Blink
+				}
+			}
 			return m, nil
 		case "a":
 			if m.screen == screenManage {
@@ -328,6 +387,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.picker.Init()
 				}
 			}
+			if m.screen == screenMessages {
+				if it, ok := m.msgList.SelectedItem().(msgItem); ok {
+					msg := it.m
+					m.readingMsg = &msg
+				}
+				return m, nil
+			}
 		}
 	}
 
@@ -346,7 +412,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fileList, cmd = m.fileList.Update(msg)
 		return m, cmd
 	}
+	if m.pending == nil && m.screen == screenMessages {
+		var cmd tea.Cmd
+		m.msgList, cmd = m.msgList.Update(msg)
+		return m, cmd
+	}
 	return m, nil
+}
+
+// updateCompose handles the message-compose modal.
+func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.composing = false
+		m.composeTo = nil
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.composeInput.Value())
+		if text != "" && m.composeTo != nil && m.ctrl != nil {
+			m.ctrl.SendMessage(*m.composeTo, text)
+			m.notice = "✉ message sent to " + m.composeTo.Info.Alias
+		}
+		m.composing = false
+		m.composeTo = nil
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.composeInput, cmd = m.composeInput.Update(msg)
+	return m, cmd
+}
+
+// deleteSelectedMessage drops the highlighted message from the list.
+func (m *Model) deleteSelectedMessage() {
+	it, ok := m.msgList.SelectedItem().(msgItem)
+	if !ok {
+		return
+	}
+	for i := range m.messages {
+		if m.messages[i] == it.m {
+			m.messages = append(m.messages[:i], m.messages[i+1:]...)
+			break
+		}
+	}
+	m.msgList.SetItems(m.msgItems())
 }
 
 // updatePicker handles the file picker / staging screen.
@@ -588,6 +696,12 @@ func (m Model) View() string {
 	if m.confirmDel {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.confirmDeleteView()))
 	}
+	if m.composing {
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.composeView()))
+	}
+	if m.readingMsg != nil {
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.readMessageView()))
+	}
 
 	cw, ih := innerDims(w, h)
 	var body string
@@ -613,6 +727,12 @@ func (m Model) View() string {
 			body, center = headerStyle.Render("No received files.\nFiles sent to this device appear here."), true
 		default:
 			body = m.manageView()
+		}
+	case screenMessages:
+		if len(m.messages) == 0 {
+			body, center = headerStyle.Render("No messages yet.\nSelect a device and press m to send one."), true
+		} else {
+			body = messageHeader() + "\n" + m.msgList.View()
 		}
 	case screenSettings:
 		if m.editing {
@@ -667,7 +787,7 @@ func (m Model) tabBar() string {
 		}
 		return tabInactiveStyle.Render(label)
 	}
-	return " " + tab("Devices", screenPeers) + tab("Transfers", screenTransfers) + tab("Manage", screenManage) + tab("Settings", screenSettings)
+	return " " + tab("Devices", screenPeers) + tab("Transfers", screenTransfers) + tab("Manage", screenManage) + tab("Messages", screenMessages) + tab("Settings", screenSettings)
 }
 
 func (m Model) pickerView() string {
@@ -967,6 +1087,12 @@ func (m Model) settingsEditView() string {
 // footerText is the contextual help line shown at the bottom of the window.
 func (m Model) footerText() string {
 	switch {
+	case m.notice != "":
+		return m.notice
+	case m.composing:
+		return "enter send · esc cancel"
+	case m.readingMsg != nil:
+		return "esc/enter close"
 	case m.confirmDel:
 		return "y/enter delete · n/esc cancel"
 	case m.editing:
@@ -974,13 +1100,15 @@ func (m Model) footerText() string {
 	case m.screen == screenPicker:
 		return "enter stage file · a add folder · backspace unstage · S send · esc back"
 	case m.screen == screenPeers:
-		return "enter send-to · r refresh · / filter · 1-4 switch · q quit"
+		return "enter send-to · m message · r refresh · / filter · 1-5 switch · q quit"
 	case m.screen == screenTransfers:
-		return "c clear finished · 1-4 switch · q quit"
+		return "c clear finished · 1-5 switch · q quit"
 	case m.screen == screenManage:
-		return "space mark · a all · d delete · r refresh · / filter · 1-4 switch · q quit"
+		return "space mark · a all · d delete · r refresh · / filter · 1-5 switch · q quit"
+	case m.screen == screenMessages:
+		return "enter read · d delete · 1-5 switch · q quit"
 	case m.screen == screenSettings:
-		return "e edit · a auto-accept · i icons · 1-4 switch · q quit"
+		return "e edit · a auto-accept · i icons · 1-5 switch · q quit"
 	}
 	return "q quit"
 }

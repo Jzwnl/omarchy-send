@@ -26,9 +26,12 @@ type IncomingMsg struct{ Req server.AcceptRequest }
 // TransferMsg reports progress/lifecycle of a transfer (either direction).
 type TransferMsg struct{ Ev transfer.Event }
 
-// BridgeServer forwards the server's accept requests and transfer events to the
-// Tea program until ctx is cancelled.
-func BridgeServer(ctx context.Context, accepts <-chan server.AcceptRequest, transfers <-chan transfer.Event, send func(tea.Msg)) {
+// MessageMsg is delivered when a peer sends us a plain-text message.
+type MessageMsg struct{ Msg server.ReceivedMessage }
+
+// BridgeServer forwards the server's accept requests, transfer events, and
+// received messages to the Tea program until ctx is cancelled.
+func BridgeServer(ctx context.Context, accepts <-chan server.AcceptRequest, transfers <-chan transfer.Event, messages <-chan server.ReceivedMessage, send func(tea.Msg)) {
 	go func() {
 		for {
 			select {
@@ -38,6 +41,8 @@ func BridgeServer(ctx context.Context, accepts <-chan server.AcceptRequest, tran
 				send(IncomingMsg{Req: req})
 			case ev := <-transfers:
 				send(TransferMsg{Ev: ev})
+			case m := <-messages:
+				send(MessageMsg{Msg: m})
 			}
 		}
 	}()

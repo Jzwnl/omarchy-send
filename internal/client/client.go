@@ -94,6 +94,33 @@ func (s *Sender) Send(peer discovery.Peer, paths []string, pin string) {
 	go s.send(peer, paths, pin)
 }
 
+// SendMessage sends a plain-text message to peer (LocalSend "send message":
+// one text file whose content rides in the preview field, so nothing is
+// uploaded). Errors are reported on Events() as an outgoing Error.
+func (s *Sender) SendMessage(peer discovery.Peer, text string) {
+	go s.sendMessage(peer, text)
+}
+
+func (s *Sender) sendMessage(peer discovery.Peer, text string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	id := randID()
+	files := map[string]protocol.FileMetadata{
+		id: {
+			ID:       id,
+			FileName: "message.txt",
+			Size:     int64(len(text)),
+			FileType: "text/plain",
+			Preview:  text,
+		},
+	}
+	if _, err := s.prepareUpload(ctx, s.url(peer), files, ""); err != nil {
+		dbg.Logf("send message to %s failed: %v", peer.IP, err)
+		s.emit(transfer.Event{Dir: transfer.Outgoing, Kind: transfer.Error, FileName: "message", Err: err})
+	}
+}
+
 func (s *Sender) send(peer discovery.Peer, paths []string, pin string) {
 	// A new transfer to a peer supersedes any still-running one to the same
 	// peer: cancel it so a half-finished old batch can't carry on once the user

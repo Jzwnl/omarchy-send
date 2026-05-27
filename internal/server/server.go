@@ -51,6 +51,15 @@ type Server struct {
 
 	accepts   chan AcceptRequest
 	transfers chan transfer.Event
+	messages  chan ReceivedMessage
+}
+
+// ReceivedMessage is a plain-text message received from a peer (LocalSend
+// "send message": a single text file whose content rides in the preview field).
+type ReceivedMessage struct {
+	From string
+	Text string
+	Time time.Time
 }
 
 // New returns a Server from the given options.
@@ -63,6 +72,7 @@ func New(opts Options) *Server {
 		sessions:   newSessionStore(),
 		accepts:    make(chan AcceptRequest, 8),
 		transfers:  make(chan transfer.Event, 256),
+		messages:   make(chan ReceivedMessage, 32),
 	}
 	s.autoAccept.Store(opts.AutoAccept)
 	mux := http.NewServeMux()
@@ -121,6 +131,9 @@ func (s *Server) Accepts() <-chan AcceptRequest { return s.accepts }
 
 // Transfers returns the channel of incoming-transfer progress events.
 func (s *Server) Transfers() <-chan transfer.Event { return s.transfers }
+
+// Messages returns the channel of received plain-text messages.
+func (s *Server) Messages() <-chan ReceivedMessage { return s.messages }
 
 // Start binds the listener and serves in the background until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
@@ -185,6 +198,15 @@ func (s *Server) handlePrepareUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A "message" is a single text file whose content rides in the preview
+	// field (LocalSend convention). It's received in full right here — surface
+	// it and return an empty file set so the sender uploads nothing.
+	if text, ok := messageOf(req.Files); ok {
+		s.emitMessage(ReceivedMessage{From: req.Info.Alias, Text: text, Time: time.Now()})
+		writeJSON(w, protocol.PrepareUploadResponse{SessionID: randToken(), Files: map[string]string{}})
+		return
+	}
+
 	if !s.askAccept(req, clientIP(r)) {
 		http.Error(w, "rejected", http.StatusForbidden)
 		return
@@ -192,6 +214,35 @@ func (s *Server) handlePrepareUpload(w http.ResponseWriter, r *http.Request) {
 
 	sess, tokens := s.sessions.create(req.Info, clientIP(r), req.Files)
 	writeJSON(w, protocol.PrepareUploadResponse{SessionID: sess.id, Files: tokens})
+}
+
+// messageOf reports whether files represents a plain-text message (exactly one
+// text file with non-empty preview) and returns the message text.
+func messageOf(files map[string]protocol.FileMetadata) (string, bool) {
+	if len(files) != 1 {
+		return "", false
+	}
+	for _, f := range files {
+		if f.Preview != "" && isTextType(f.FileType) {
+			return f.Preview, true
+		}
+	}
+	return "", false
+}
+
+// isTextType matches both the MIME form ("text/plain") that LocalSend sends and
+// the bare enum form ("text") older clients may use.
+func isTextType(fileType string) bool {
+	return fileType == "text" || strings.HasPrefix(fileType, "text/")
+}
+
+// emitMessage delivers a received message without blocking the HTTP handler.
+func (s *Server) emitMessage(m ReceivedMessage) {
+	dbg.Logf("received message from %q: %q", m.From, m.Text)
+	select {
+	case s.messages <- m:
+	default:
+	}
 }
 
 // askAccept honours auto-accept, or raises an AcceptRequest and blocks for the

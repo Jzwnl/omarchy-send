@@ -28,6 +28,7 @@ type controller struct {
 
 func (c controller) Announce()                                         { c.disc.Announce() }
 func (c controller) Send(p discovery.Peer, paths []string, pin string) { c.sender.Send(p, paths, pin) }
+func (c controller) SendMessage(p discovery.Peer, text string)         { c.sender.SendMessage(p, text) }
 func (c controller) SetAutoAccept(v bool)                              { c.srv.SetAutoAccept(v) }
 func (c controller) SetPIN(pin string)                                 { c.srv.SetPIN(pin) }
 func (c controller) SetReceiveDir(dir string)                          { c.srv.SetReceiveDir(dir) }
@@ -113,7 +114,7 @@ func main() {
 
 	p := tea.NewProgram(tui.New(cfg, ctrl), tea.WithAltScreen())
 	app.BridgeDiscovery(ctx, disc.Events(), p.Send)
-	app.BridgeServer(ctx, srv.Accepts(), srv.Transfers(), p.Send)
+	app.BridgeServer(ctx, srv.Accepts(), srv.Transfers(), srv.Messages(), p.Send)
 	app.BridgeTransfers(ctx, sender.Events(), p.Send)
 	disc.Announce() // announce immediately so we appear without waiting a tick
 
