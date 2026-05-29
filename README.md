@@ -20,6 +20,11 @@ LocalSend mobile and desktop apps on the same LAN, including their default
   clipboard as a message, or copy a received one back to the clipboard (uses
   `wl-clipboard`/`xclip`/`xsel`, or tmux's paste buffer when run inside tmux on
   a headless box).
+- **Desktop notifications** — on a graphical session (e.g. Omarchy/Hyprland with
+  `mako`), an incoming message or file offer raises a desktop notification via
+  `notify-send`, so a backgrounded receiver still gets your attention. Best-effort
+  and self-disabling on headless boxes; turn it off with `--no-notify` or the `n`
+  key in Settings.
 - **Manage** — browse the receive folder, mark received files (or whole folders)
   and delete the ones you no longer want, behind a confirmation prompt.
 - **HTTPS** — generates a self-signed certificate whose fingerprint matches the
@@ -65,7 +70,26 @@ omarchy-send --dir ~/Downloads    # override the receive directory
 omarchy-send --auto-accept        # accept incoming transfers without a prompt
 omarchy-send --pin 2468           # require senders to supply this PIN
 omarchy-send --no-icons           # drop Nerd Font glyphs (non-Nerd-Font terminals)
+omarchy-send --no-notify          # don't raise desktop notifications on incoming
 ```
+
+### Headless send (no TUI)
+
+Send a one-off message to a peer by name, with no terminal UI — handy from
+scripts, cron, or an SSH session with no TTY:
+
+```sh
+omarchy-send --to "Strong Onion" --message "hello"
+omarchy-send --to "Strong Onion" --message "deploy finished" --wait 20s
+omarchy-send --to "Strong Onion" --message "hi" --send-pin 2468   # if the peer requires a PIN
+```
+
+The target is matched against the peer's display name, case-insensitively. The
+command discovers the peer over multicast (waiting up to `--wait`, default 15s),
+sends the message, prints a one-line result, and exits non-zero if the peer
+isn't found or the send fails. It starts discovery only — not the receiver — so
+it's safe to run while another `omarchy-send` instance is up. Both `--to` and
+`--message` are required; file sending stays in the TUI for now.
 
 ### Theming
 
@@ -106,7 +130,7 @@ omarchy-send --auto-accept --pin 2468
   delete it (incoming messages arrive automatically, with a footer notice)
 - Manage: `space` mark file/folder · `a` mark all · `d` delete marked (or the one
   under the cursor) · `r` refresh · `/` filter — deletion asks to confirm first
-- Settings: `e` edit (alias / receive dir / PIN) · `a` toggle auto-accept
+- Settings: `e` edit (alias / receive dir / PIN) · `a` toggle auto-accept · `i` toggle icons · `n` toggle notifications
 - Sending to a PIN-protected peer prompts for the PIN and retries
 - `q` quit
 

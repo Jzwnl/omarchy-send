@@ -21,8 +21,9 @@ type Config struct {
 	DeviceType  string `json:"deviceType"`
 	Protocol    string `json:"protocol"`
 	AutoAccept  bool   `json:"autoAccept"`
-	PIN         string `json:"pin"`     // if set, senders must supply it
-	NoIcons     bool   `json:"noIcons"` // hide Nerd Font device icons (non-NF terminals)
+	PIN         string `json:"pin"`      // if set, senders must supply it
+	NoIcons     bool   `json:"noIcons"`  // hide Nerd Font device icons (non-NF terminals)
+	NoNotify    bool   `json:"noNotify"` // don't raise desktop notifications on incoming messages/files
 
 	// TLS identity for encrypted (HTTPS) mode, generated once and persisted.
 	CertPEM string `json:"certPem"`

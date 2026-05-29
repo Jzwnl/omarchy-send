@@ -38,6 +38,7 @@ type Controller interface {
 	SetAlias(string)
 	SetReceiveDir(string)
 	SetPIN(string)
+	SetNotify(bool)
 }
 
 type screen int
@@ -423,6 +424,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen == screenSettings {
 				m.cfg.NoIcons = !m.cfg.NoIcons
 				m.peerList.SetDelegate(deviceDelegate{icons: !m.cfg.NoIcons})
+				_ = m.cfg.Save()
+			}
+			return m, nil
+		case "n":
+			if m.screen == screenSettings {
+				m.cfg.NoNotify = !m.cfg.NoNotify
+				if m.ctrl != nil {
+					m.ctrl.SetNotify(!m.cfg.NoNotify)
+				}
 				_ = m.cfg.Save()
 			}
 			return m, nil
@@ -1124,6 +1134,7 @@ func (m Model) settingsView() string {
 		{"Auto-accept", boolStr(m.autoAccept)},
 		{"PIN", boolStr(m.cfg.PIN != "")},
 		{"Icons", boolStr(!m.cfg.NoIcons)},
+		{"Notifications", boolStr(!m.cfg.NoNotify)},
 		{"Local IPs", strings.Join(m.ips, ", ")},
 	}
 	for _, r := range rows {
@@ -1174,7 +1185,7 @@ func (m Model) footerText() string {
 	case m.screen == screenMessages:
 		return "enter read · y copy · d delete · 1-5 switch · q quit"
 	case m.screen == screenSettings:
-		return "e edit · a auto-accept · i icons · 1-5 switch · q quit"
+		return "e edit · a auto-accept · i icons · n notify · 1-5 switch · q quit"
 	}
 	return "q quit"
 }

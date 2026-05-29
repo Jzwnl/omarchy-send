@@ -5,10 +5,14 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -17,7 +21,9 @@ import (
 	"omarchy-send/internal/config"
 	"omarchy-send/internal/dbg"
 	"omarchy-send/internal/discovery"
+	"omarchy-send/internal/notify"
 	"omarchy-send/internal/server"
+	"omarchy-send/internal/transfer"
 	"omarchy-send/internal/tui"
 )
 
@@ -26,6 +32,7 @@ type controller struct {
 	disc   *discovery.Discoverer
 	sender *client.Sender
 	srv    *server.Server
+	notify *atomic.Bool // live gate for desktop notifications (toggled from Settings)
 }
 
 func (c controller) Announce()                                         { c.disc.Announce() }
@@ -36,6 +43,7 @@ func (c controller) SendMessage(p discovery.Peer, text, pin string) {
 func (c controller) SetAutoAccept(v bool)     { c.srv.SetAutoAccept(v) }
 func (c controller) SetPIN(pin string)        { c.srv.SetPIN(pin) }
 func (c controller) SetReceiveDir(dir string) { c.srv.SetReceiveDir(dir) }
+func (c controller) SetNotify(v bool)         { c.notify.Store(v) }
 
 // SetAlias updates the alias across all services and re-announces it.
 func (c controller) SetAlias(alias string) {
@@ -53,6 +61,13 @@ func main() {
 		pinFlag   = flag.String("pin", "", "require this PIN from senders (overrides config)")
 		autoFlag  = flag.Bool("auto-accept", false, "auto-accept incoming transfers (no prompt)")
 		noIcons   = flag.Bool("no-icons", false, "hide Nerd Font device icons (for non-Nerd-Font terminals)")
+		noNotify  = flag.Bool("no-notify", false, "don't raise desktop notifications on incoming messages/files")
+
+		// Headless one-shot send (no TUI): -to <alias> -message <text>.
+		toFlag      = flag.String("to", "", "headless send: target peer alias to send to (no TUI); requires -message")
+		messageFlag = flag.String("message", "", "headless send: plain-text message to send to -to")
+		sendPINFlag = flag.String("send-pin", "", "headless send: PIN to present if the target peer requires one")
+		waitFlag    = flag.Duration("wait", 15*time.Second, "headless send: how long to wait for the target peer to be discovered")
 	)
 	flag.Parse()
 
@@ -84,6 +99,19 @@ func main() {
 	}
 	if *noIcons {
 		cfg.NoIcons = true
+	}
+	if *noNotify {
+		cfg.NoNotify = true
+	}
+
+	// Headless one-shot send: resolve the target by alias over discovery, send,
+	// and exit — no TUI, no terminal required. Suitable for scripts and cron.
+	if *toFlag != "" || *messageFlag != "" {
+		if *toFlag == "" || *messageFlag == "" {
+			fmt.Fprintln(os.Stderr, "headless send needs both -to <alias> and -message <text>")
+			os.Exit(2)
+		}
+		os.Exit(runHeadlessSend(cfg, *toFlag, *messageFlag, *sendPINFlag, *waitFlag))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,11 +147,23 @@ func main() {
 	}
 
 	sender := client.New(cfg.DeviceInfo())
-	ctrl := controller{disc: disc, sender: sender, srv: srv}
+
+	// notifyOn is the live notification gate: the user's preference (-no-notify /
+	// the Settings toggle), AND only meaningful where notify-send can actually
+	// reach a daemon. notify.Send itself no-ops when unavailable, so the gate
+	// only carries the user preference here.
+	notifyOn := &atomic.Bool{}
+	notifyOn.Store(!cfg.NoNotify)
+	ctrl := controller{disc: disc, sender: sender, srv: srv, notify: notifyOn}
 
 	p := tea.NewProgram(tui.New(cfg, ctrl), tea.WithAltScreen())
 	app.BridgeDiscovery(ctx, disc.Events(), p.Send)
-	app.BridgeServer(ctx, srv.Accepts(), srv.Transfers(), srv.Messages(), p.Send)
+	notifyFn := func(summary, body string) {
+		if notifyOn.Load() {
+			notify.Send(summary, body)
+		}
+	}
+	app.BridgeServer(ctx, srv.Accepts(), srv.Transfers(), srv.Messages(), p.Send, notifyFn)
 	app.BridgeTransfers(ctx, sender.Events(), p.Send)
 	disc.Announce() // announce immediately so we appear without waiting a tick
 
@@ -131,4 +171,56 @@ func main() {
 		fmt.Fprintf(os.Stderr, "tui: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runHeadlessSend discovers the peer whose alias matches target (case-
+// insensitively), sends it a plain-text message, and returns a process exit
+// code. It deliberately starts only discovery — not the HTTP receiver — so it
+// can run alongside an already-running instance without fighting over the
+// listen port. Status goes to stderr; the success line goes to stdout.
+func runHeadlessSend(cfg config.Config, target, message, sendPIN string, wait time.Duration) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	disc := discovery.New(cfg.DeviceInfo())
+	if err := disc.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "discovery: %v\n", err)
+		return 1
+	}
+	disc.Announce() // solicit replies immediately rather than waiting a tick
+
+	want := strings.TrimSpace(target)
+	fmt.Fprintf(os.Stderr, "Looking for %q on the network (up to %s)…\n", want, wait)
+
+	findCtx, findCancel := context.WithTimeout(ctx, wait)
+	defer findCancel()
+	peer, err := disc.FindPeer(findCtx, func(p discovery.Peer) bool {
+		return strings.EqualFold(strings.TrimSpace(p.Info.Alias), want)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "no peer named %q found within %s.\n", want, wait)
+		if seen := disc.Snapshot(); len(seen) > 0 {
+			fmt.Fprintln(os.Stderr, "Peers seen:")
+			for _, p := range seen {
+				fmt.Fprintf(os.Stderr, "  - %q (%s)\n", p.Info.Alias, p.IP)
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "No peers were seen at all — check you're on the same LAN and the target is running omarchy-send / LocalSend.")
+		}
+		return 1
+	}
+
+	sender := client.New(cfg.DeviceInfo())
+	if err := sender.SendMessageSync(peer, message, sendPIN); err != nil {
+		switch {
+		case errors.Is(err, transfer.ErrPinRequired):
+			fmt.Fprintf(os.Stderr, "%q requires a PIN — pass it with -send-pin.\n", peer.Info.Alias)
+		default:
+			fmt.Fprintf(os.Stderr, "send to %q (%s) failed: %v\n", peer.Info.Alias, peer.IP, err)
+		}
+		return 1
+	}
+
+	fmt.Printf("Message sent to %q (%s).\n", peer.Info.Alias, peer.IP)
+	return 0
 }

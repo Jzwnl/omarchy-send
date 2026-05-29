@@ -103,6 +103,18 @@ func (s *Sender) SendMessage(peer discovery.Peer, text, pin string) {
 }
 
 func (s *Sender) sendMessage(peer discovery.Peer, text, pin string) {
+	if err := s.SendMessageSync(peer, text, pin); err != nil {
+		dbg.Logf("send message to %s failed: %v", peer.IP, err)
+		s.emit(transfer.Event{Dir: transfer.Outgoing, Kind: transfer.Error, FileName: "message", Err: err})
+	}
+}
+
+// SendMessageSync sends a plain-text message to peer and blocks until the peer
+// has accepted it (or an error occurs), returning that error directly —
+// including transfer.ErrPinRequired when the peer needs a PIN. Unlike
+// SendMessage it reports nothing on Events(); it exists for the headless
+// one-shot send path, where there is no TUI to consume events.
+func (s *Sender) SendMessageSync(peer discovery.Peer, text, pin string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -116,10 +128,8 @@ func (s *Sender) sendMessage(peer discovery.Peer, text, pin string) {
 			Preview:  text,
 		},
 	}
-	if _, err := s.prepareUpload(ctx, s.url(peer), files, pin); err != nil {
-		dbg.Logf("send message to %s failed: %v", peer.IP, err)
-		s.emit(transfer.Event{Dir: transfer.Outgoing, Kind: transfer.Error, FileName: "message", Err: err})
-	}
+	_, err := s.prepareUpload(ctx, s.url(peer), files, pin)
+	return err
 }
 
 func (s *Sender) send(peer discovery.Peer, paths []string, pin string) {
@@ -281,6 +291,14 @@ func (s *Sender) prepareUpload(ctx context.Context, base string, files map[strin
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return protocol.PrepareUploadResponse{}, transfer.ErrPinRequired
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		// 204: accepted, but nothing to upload — the official LocalSend client
+		// returns this for a message (its text rode in the preview field) and
+		// for files the peer already has. No session/token map follows, so
+		// return an empty response: a message send is done, and a file send
+		// simply finds no tokens to push, which is the correct outcome.
+		return protocol.PrepareUploadResponse{}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return protocol.PrepareUploadResponse{}, fmt.Errorf("prepare-upload status %d", resp.StatusCode)
