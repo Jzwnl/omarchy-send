@@ -25,6 +25,11 @@ type Config struct {
 	NoIcons     bool   `json:"noIcons"`  // hide Nerd Font device icons (non-NF terminals)
 	NoNotify    bool   `json:"noNotify"` // don't raise desktop notifications on incoming messages/files
 
+	// KnownPeers are hosts (name, IP, or host:port) probed directly over unicast
+	// so peers off the local subnet — e.g. reached over Tailscale — show up even
+	// though multicast discovery can't find them.
+	KnownPeers []string `json:"knownPeers,omitempty"`
+
 	// TLS identity for encrypted (HTTPS) mode, generated once and persisted.
 	CertPEM string `json:"certPem"`
 	KeyPEM  string `json:"keyPem"`

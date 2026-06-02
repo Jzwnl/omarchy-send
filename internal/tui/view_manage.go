@@ -24,7 +24,7 @@ type fileItem struct {
 }
 
 func (i fileItem) Title() string       { return i.name }
-func (i fileItem) Description() string  { return "" }
+func (i fileItem) Description() string { return "" }
 func (i fileItem) FilterValue() string { return i.name }
 
 // receivedFiles lists the top-level entries in dir, newest first. In-progress

@@ -14,11 +14,15 @@
 # Environment overrides:
 #   BIN_DIR=/usr/local/bin           install location (default ~/.local/bin)
 #   OMARCHY_SEND_VERSION=v0.1.0       pin a release (default: latest)
+#   OMARCHY_SEND_MODE=local|remote    skip the local/remote prompt (default: ask,
+#                                     or local when non-interactive)
 #
 # Behaviour:
-#   - Headless system: installs the plain `omarchy-send` TUI binary.
-#   - Omarchy desktop:  additionally adds a Walker entry that launches it as a
-#     floating TUI (via the stock TUI.float app-id), like the Wi-Fi TUI.
+#   - Local machine (home/LAN): installs the TUI; on Omarchy also adds a Walker
+#     entry + the Nautilus right-click integration.
+#   - Remote server (public IP): same install, then restricts port 53317 to the
+#     Tailscale interface in the firewall, so it's reachable over the tailnet
+#     only — not the open internet.
 
 set -euo pipefail
 
@@ -27,6 +31,7 @@ BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 APP_DIR="$HOME/.local/share/applications"
 BIN="$BIN_DIR/omarchy-send"
 VERSION="${OMARCHY_SEND_VERSION:-latest}"
+PORT=53317
 
 mkdir -p "$BIN_DIR"
 
@@ -35,6 +40,30 @@ SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
+
+# ---- local vs remote -----------------------------------------------------
+# A remote (public-IP) server should not expose the transfer port to the
+# internet. Ask once; default to "local" when non-interactive (e.g. piped
+# `curl | bash` with no terminal) so a firewall is never changed without intent.
+# Reads /dev/tty so the prompt still works under curl|bash.
+MODE="${OMARCHY_SEND_MODE:-}"
+case "$MODE" in
+  local | remote) : ;; # explicit override, don't ask
+  *)
+    MODE="local"
+    # Try to open the controlling terminal read-write on fd 3. A bare -r test
+    # isn't enough: /dev/tty can exist yet fail to open (no controlling tty —
+    # cron/CI/piped). Only prompt when the open actually succeeds.
+    if { exec 3<>/dev/tty; } 2>/dev/null; then
+      printf 'Install type — [L]ocal machine (home/LAN) or [r]emote server (public IP)? [L/r] ' >&3 || true
+      IFS= read -r _ans <&3 || _ans=""
+      exec 3>&- 3<&- || true
+      case "$_ans" in
+        r | R | remote | Remote | REMOTE) MODE="remote" ;;
+      esac
+    fi
+    ;;
+esac
 
 # ---- obtain the binary ---------------------------------------------------
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
@@ -225,6 +254,73 @@ PY
   fi # nautilus present
 else
   echo "==> Headless system — installed as a plain TUI."
+fi
+
+# ---- firewall posture ----------------------------------------------------
+# Shared by the remote-mode lockdown below and the local-mode public-IP warning.
+#
+# Tailscale interface: usually tailscale0, but absent when tailscaled runs in
+# userspace-networking mode (the default inside containers) — don't hardcode it.
+TS_IFACE="$(ip -o link show 2>/dev/null | grep -oE 'tailscale[0-9]+' | head -n1)"
+
+# Container? Under Docker host-networking the port binds the *host's* stack, and
+# the firewall belongs on the host, not in this namespace.
+IN_CONTAINER=0
+if [ -f /.dockerenv ] || grep -qaE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null; then
+  IN_CONTAINER=1
+fi
+
+# ---- remote server: restrict the port to the Tailscale network -----------
+# On a public-IP box, port 53317 would otherwise be reachable from the internet
+# (the receiver binds all interfaces). Lock it to the Tailscale interface so it
+# only answers over the tailnet. Multicast LAN discovery is link-local and never
+# routes off-LAN, so nothing else needs opening. Inside a container the firewall
+# can't be applied from here — userspace-networking has no tailscale0 and host-
+# networking puts the bind on the host's stack — so we detect that and say so.
+if [ "$MODE" = "remote" ]; then
+  echo "==> Remote server — restricting port $PORT to the Tailscale network."
+
+  if [ "$IN_CONTAINER" = "1" ] && [ -z "$TS_IFACE" ]; then
+    # Container + userspace-networking Tailscale: no tailscale0, and typically no
+    # CAP_NET_ADMIN to manage netfilter. A firewall can't be applied from in here.
+    echo "    Detected: inside a container with userspace-networking Tailscale"
+    echo "    (no tailscale0 interface). The receiver binds all interfaces — and under"
+    echo "    Docker host-networking that includes the host's PUBLIC interface."
+    echo
+    echo "    A firewall CANNOT be applied from in here. Apply it on the HOST:"
+    echo "      • if the host already default-denies inbound (e.g. only 22/80/443 open),"
+    echo "        $PORT is already blocked from the internet yet still reachable over the"
+    echo "        tailnet (tailscaled delivers it via loopback) — nothing more to do."
+    echo "      • otherwise, on the host run:  ufw deny $PORT"
+    echo "    Strongly recommended in this setup: also set a PIN (--pin <code>)."
+  elif [ -n "$TS_IFACE" ] && command -v ufw >/dev/null 2>&1; then
+    SUDO=""
+    [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    echo "    Tailscale interface: $TS_IFACE"
+    echo "    Applying firewall rules (may prompt for sudo):"
+    echo "      ${SUDO:+$SUDO }ufw allow in on $TS_IFACE to any port $PORT"
+    echo "      ${SUDO:+$SUDO }ufw deny $PORT"
+    if $SUDO ufw allow in on "$TS_IFACE" to any port "$PORT" >/dev/null 2>&1 &&
+      $SUDO ufw deny "$PORT" >/dev/null 2>&1; then
+      echo "    Done — $PORT answers over Tailscale only."
+    else
+      echo "    Could not apply automatically (need root/sudo). Run the two commands above yourself."
+    fi
+  else
+    if [ -z "$TS_IFACE" ]; then
+      echo "    NOTE: no tailscale interface found. If tailscale isn't up yet, install it"
+      echo "          and run 'tailscale up', then re-run this installer. If it's running"
+      echo "          in userspace-networking mode, firewall the port on the host instead."
+      TS_IFACE="tailscale0"
+    fi
+    echo "    ufw not found. Apply the equivalent in your firewall:"
+    echo "      • allow inbound TCP $PORT only on the '$TS_IFACE' interface"
+    echo "      • deny inbound $PORT on all other interfaces"
+    echo "    nftables example (inet filter, input chain):"
+    echo "      iifname \"$TS_IFACE\" tcp dport $PORT accept"
+    echo "      tcp dport $PORT drop"
+  fi
+  echo "    Tip: a PIN adds a second layer — run with --pin <code> (or set it in Settings)."
 fi
 
 echo

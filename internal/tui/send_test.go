@@ -33,6 +33,7 @@ func (f *fakeCtrl) SetAlias(string)                                {}
 func (f *fakeCtrl) SetReceiveDir(string)                           {}
 func (f *fakeCtrl) SetPIN(string)                                  {}
 func (f *fakeCtrl) SetNotify(bool)                                 {}
+func (f *fakeCtrl) AddKnownPeer(string)                            {}
 
 // writeTree lays out a small fixture tree under a temp dir for walkIndex tests.
 func writeTree(t *testing.T) string {

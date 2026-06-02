@@ -1,0 +1,64 @@
+package discovery
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"omarchy-send/internal/protocol"
+)
+
+// TestProbeRegistersPeer drives Probe against a stub /register that behaves like
+// a real peer: it records the caller and returns its own DeviceInfo. The https
+// attempt fails against the plain-http test server and Probe falls back to http.
+func TestProbeRegistersPeer(t *testing.T) {
+	peerInfo := protocol.DeviceInfo{Alias: "Remote", Fingerprint: "remote-fp", Port: 53317, Protocol: "http"}
+	var sawOurInfo bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/localsend/v2/register", func(w http.ResponseWriter, r *http.Request) {
+		var in protocol.DeviceInfo
+		if err := json.NewDecoder(r.Body).Decode(&in); err == nil && in.Fingerprint == "self-fp" {
+			sawOurInfo = true
+		}
+		_ = json.NewEncoder(w).Encode(peerInfo)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://") // host:port
+
+	d := New(protocol.DeviceInfo{Fingerprint: "self-fp", Alias: "Self"})
+	if err := d.Probe(context.Background(), host); err != nil {
+		t.Fatalf("Probe failed: %v", err)
+	}
+	if !sawOurInfo {
+		t.Error("peer did not receive our device info in the register body")
+	}
+	peers := d.Snapshot()
+	if len(peers) != 1 || peers[0].Info.Fingerprint != "remote-fp" {
+		t.Fatalf("peer not recorded as expected: %+v", peers)
+	}
+	if wantIP := strings.Split(host, ":")[0]; peers[0].IP != wantIP {
+		t.Errorf("peer IP = %q, want %q (the host we dialed)", peers[0].IP, wantIP)
+	}
+}
+
+func TestProbeUnreachableErrors(t *testing.T) {
+	d := New(protocol.DeviceInfo{Fingerprint: "self-fp"})
+	// 127.0.0.1:1 — nothing listening; both https and http should fail fast.
+	if err := d.Probe(context.Background(), "127.0.0.1:1"); err == nil {
+		t.Fatal("expected an error probing an unreachable host")
+	}
+}
+
+func TestHostPortDefaults(t *testing.T) {
+	if h, p := hostPort("colossus"); h != "colossus" || p != protocol.DefaultPort {
+		t.Errorf("hostPort(bare) = %q,%d; want colossus,%d", h, p, protocol.DefaultPort)
+	}
+	if h, p := hostPort("100.64.0.2:9999"); h != "100.64.0.2" || p != 9999 {
+		t.Errorf("hostPort(host:port) = %q,%d; want 100.64.0.2,9999", h, p)
+	}
+}

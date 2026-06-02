@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"omarchy-send/internal/discovery"
 	"omarchy-send/internal/notify"
 	"omarchy-send/internal/server"
+	"omarchy-send/internal/tailscale"
 	"omarchy-send/internal/transfer"
 	"omarchy-send/internal/tui"
 )
@@ -34,6 +36,85 @@ type controller struct {
 	sender *client.Sender
 	srv    *server.Server
 	notify *atomic.Bool // live gate for desktop notifications (toggled from Settings)
+	rem    *remotes     // live set of directly-probed (known/remote) hosts
+}
+
+// remotes is the live set of hosts probed directly over unicast: known peers
+// loaded from config plus any added at runtime in the TUI. Guarded because the
+// watcher goroutine and the controller's AddKnownPeer both touch it.
+type remotes struct {
+	mu    sync.Mutex
+	hosts []string
+}
+
+func (r *remotes) list() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.hosts...)
+}
+
+// add appends host if not already present, returning true if it was new.
+func (r *remotes) add(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, h := range r.hosts {
+		if h == host {
+			return false
+		}
+	}
+	r.hosts = append(r.hosts, host)
+	return true
+}
+
+// AddKnownPeer registers a remote host and probes it immediately so it shows up
+// without waiting for the next watcher tick. Persisting it to config is the
+// TUI's job; this only updates the live set.
+func (c controller) AddKnownPeer(host string) {
+	if c.rem != nil {
+		c.rem.add(host)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		_ = c.disc.Probe(ctx, host)
+	}()
+}
+
+// watchRemotes periodically probes the known-peer set plus any online Tailscale
+// peers, so devices that multicast can't reach (different subnet / over the
+// tailnet) still appear in the list — and age out when they stop answering.
+func watchRemotes(ctx context.Context, disc *discovery.Discoverer, rem *remotes) {
+	probeAll := func() {
+		seen := map[string]bool{}
+		hosts := rem.list()
+		hosts = append(hosts, tailscale.Peers(ctx)...)
+		for _, h := range hosts {
+			if h == "" || seen[h] {
+				continue
+			}
+			seen[h] = true
+			go func(host string) {
+				pctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+				defer cancel()
+				_ = disc.Probe(pctx, host)
+			}(h)
+		}
+	}
+	probeAll() // immediate, so remotes appear without waiting a tick
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			probeAll()
+		}
+	}
 }
 
 func (c controller) Announce()                                         { c.disc.Announce() }
@@ -186,7 +267,9 @@ func main() {
 	// only carries the user preference here.
 	notifyOn := &atomic.Bool{}
 	notifyOn.Store(!cfg.NoNotify)
-	ctrl := controller{disc: disc, sender: sender, srv: srv, notify: notifyOn}
+	rem := &remotes{hosts: cfg.KnownPeers}
+	ctrl := controller{disc: disc, sender: sender, srv: srv, notify: notifyOn, rem: rem}
+	go watchRemotes(ctx, disc, rem)
 
 	p := tea.NewProgram(tui.New(cfg, ctrl), tea.WithAltScreen())
 	app.BridgeDiscovery(ctx, disc.Events(), p.Send)
@@ -222,7 +305,9 @@ func runQuickSend(cfg config.Config, paths []string) int {
 
 	// No receiver in quick-send mode, so nothing to notify about.
 	notifyOff := &atomic.Bool{}
-	ctrl := controller{disc: disc, sender: sender, srv: nil, notify: notifyOff}
+	rem := &remotes{hosts: cfg.KnownPeers}
+	ctrl := controller{disc: disc, sender: sender, srv: nil, notify: notifyOff, rem: rem}
+	go watchRemotes(ctx, disc, rem) // so a remote box is a valid quick-send target too
 
 	p := tea.NewProgram(tui.New(cfg, ctrl, tui.WithStagedFiles(paths)), tea.WithAltScreen())
 	app.BridgeDiscovery(ctx, disc.Events(), p.Send)

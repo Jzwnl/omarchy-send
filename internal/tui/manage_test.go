@@ -64,15 +64,15 @@ func TestManageDeleteSingleViaConfirm(t *testing.T) {
 	m, dir := manageModel(t, "keep.txt", "drop.txt")
 	// Cursor starts on the newest (drop.txt was written last). Marking it and
 	// confirming should remove exactly that file.
-	m = key(m, " ")     // mark file under cursor
+	m = key(m, " ") // mark file under cursor
 	if len(m.marked) != 1 {
 		t.Fatalf("expected 1 marked, got %d", len(m.marked))
 	}
-	m = key(m, "d")     // request delete -> confirm card
+	m = key(m, "d") // request delete -> confirm card
 	if !m.confirmDel {
 		t.Fatal("expected confirm card to be showing")
 	}
-	m = key(m, "y")     // confirm
+	m = key(m, "y") // confirm
 	if m.confirmDel {
 		t.Error("confirm card should be dismissed after delete")
 	}

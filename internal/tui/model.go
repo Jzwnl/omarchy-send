@@ -38,6 +38,7 @@ type Controller interface {
 	SetReceiveDir(string)
 	SetPIN(string)
 	SetNotify(bool)
+	AddKnownPeer(host string) // probe a remote host directly (off-LAN / Tailscale)
 }
 
 type screen int
@@ -123,6 +124,10 @@ type Model struct {
 	sendPaths  []string
 	pendingMsg string
 
+	// Add-remote-peer modal (Devices tab): host/IP/Tailscale-name entry.
+	addingPeer bool
+	peerInput  textinput.Model
+
 	// Messages tab + compose modal.
 	msgList      list.Model
 	messages     []server.ReceivedMessage
@@ -199,6 +204,11 @@ func New(cfg config.Config, ctrl Controller, opts ...Option) Model {
 	compose.CharLimit = 2000
 	compose.Width = 48
 
+	peerInput := textinput.New()
+	peerInput.Placeholder = "host, IP, or Tailscale name"
+	peerInput.CharLimit = 256
+	peerInput.Width = 48
+
 	mkInput := func(placeholder string, limit int) textinput.Model {
 		ti := textinput.New()
 		ti.Placeholder = placeholder
@@ -229,6 +239,7 @@ func New(cfg config.Config, ctrl Controller, opts ...Option) Model {
 		editInputs:   editInputs,
 		msgList:      ml,
 		composeInput: compose,
+		peerInput:    peerInput,
 	}
 	for _, o := range opts {
 		o(&m)
@@ -321,6 +332,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.composing {
 			return m.updateCompose(msg)
 		}
+		if m.addingPeer {
+			return m.updateAddPeer(msg)
+		}
 		if m.readingMsg != nil {
 			switch msg.String() {
 			case "esc", "q", "enter":
@@ -385,6 +399,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = (m.screen + tabCount - 1) % tabCount
 			if m.screen == screenManage {
 				m.refreshManage()
+			}
+			return m, nil
+		case "+":
+			// Add a remote device by host/IP/Tailscale-name (off-LAN peer).
+			if m.screen == screenPeers {
+				m.addingPeer = true
+				m.peerInput.SetValue("")
+				m.peerInput.Focus()
+				return m, textinput.Blink
 			}
 			return m, nil
 		case "r":
@@ -547,6 +570,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.addingPeer {
+		var cmd tea.Cmd
+		m.peerInput, cmd = m.peerInput.Update(msg)
+		return m, cmd
+	}
 	if m.pending == nil && m.screen == screenPicker {
 		var cmd tea.Cmd
 		m.fzfQuery, cmd = m.fzfQuery.Update(msg)
@@ -594,6 +622,33 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.composeInput, cmd = m.composeInput.Update(msg)
+	return m, cmd
+}
+
+// updateAddPeer handles the add-remote-device modal. On enter it persists the
+// host to config's known-peers and asks the controller to probe it now.
+func (m Model) updateAddPeer(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.addingPeer = false
+		return m, nil
+	case "enter":
+		host := strings.TrimSpace(m.peerInput.Value())
+		if host != "" {
+			if !contains(m.cfg.KnownPeers, host) {
+				m.cfg.KnownPeers = append(m.cfg.KnownPeers, host)
+				_ = m.cfg.Save()
+			}
+			if m.ctrl != nil {
+				m.ctrl.AddKnownPeer(host)
+			}
+			m.notice = "added remote " + host + " — probing…"
+		}
+		m.addingPeer = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.peerInput, cmd = m.peerInput.Update(msg)
 	return m, cmd
 }
 
@@ -848,6 +903,9 @@ func (m Model) View() string {
 	if m.composing {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.composeView()))
 	}
+	if m.addingPeer {
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.addPeerView()))
+	}
 	if m.readingMsg != nil {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, cardStyle.Render(m.readMessageView()))
 	}
@@ -981,6 +1039,18 @@ func (m Model) pinView() string {
 	b.WriteString(m.pinInput.View())
 	b.WriteString("\n\n")
 	b.WriteString(footerStyle.Render("enter send · esc cancel"))
+	return b.String()
+}
+
+func (m Model) addPeerView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Add remote device"))
+	b.WriteString("\n\n")
+	b.WriteString(headerStyle.Render("A device off your LAN — e.g. a Tailscale name or IP.\nIt's probed directly (no multicast) and saved."))
+	b.WriteString("\n\n")
+	b.WriteString(m.peerInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(footerStyle.Render("enter add · esc cancel"))
 	return b.String()
 }
 
@@ -1233,6 +1303,8 @@ func (m Model) footerText() string {
 		return m.notice
 	case m.composing:
 		return "enter send · esc cancel"
+	case m.addingPeer:
+		return "enter add remote · esc cancel"
 	case m.readingMsg != nil:
 		return "y copy · esc/enter close"
 	case m.confirmDel:
@@ -1244,7 +1316,7 @@ func (m Model) footerText() string {
 	case m.screen == screenPeers && m.quickSend:
 		return fmt.Sprintf("enter send %d item(s) to selected device · r refresh · q cancel", len(m.staged))
 	case m.screen == screenPeers:
-		return "enter send-to · m message · v send-clipboard · r refresh · / filter · 1-5 · q quit"
+		return "enter send-to · m message · v clipboard · + add remote · r refresh · / filter · q quit"
 	case m.screen == screenTransfers:
 		return "c clear finished · 1-5 switch · q quit"
 	case m.screen == screenManage:

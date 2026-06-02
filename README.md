@@ -10,6 +10,10 @@ LocalSend mobile and desktop apps on the same LAN, including their default
 
 - **Discovery** — multicast announce/listen on `224.0.0.167:53317` plus the HTTP
   `/register` handshake, with peer aging.
+- **Remote devices** — reach boxes that aren't on your LAN (multicast can't find
+  them) by probing them directly over unicast. If [Tailscale](https://tailscale.com)
+  is running, online tailnet peers are discovered automatically; you can also add
+  a device by host/IP/name with the `+` key, saved for next time.
 - **Receive** — incoming files are accepted via a prompt (or auto-accepted) and
   written to the receive directory, with live progress.
 - **Send** — pick a peer, then find what to send with a built-in **recursive
@@ -47,9 +51,16 @@ curl -fsSL https://raw.githubusercontent.com/28allday/omarchy-send/main/install.
 ```
 
 This downloads the right binary for your architecture into `~/.local/bin`, and on
-Omarchy also adds a floating Walker entry (search **Omarchy-Send**). Override the
-location with `BIN_DIR=/usr/local/bin`, or pin a version with
-`OMARCHY_SEND_VERSION=v0.1.0`.
+Omarchy also adds a floating Walker entry (search **Omarchy-Send**) and the
+Nautilus right-click integration. Override the location with `BIN_DIR=/usr/local/bin`,
+or pin a version with `OMARCHY_SEND_VERSION=v0.1.0`.
+
+**Local or remote?** When run interactively the installer asks whether this is a
+**local** machine (home/LAN) or a **remote server** (public IP). Local installs as
+above. For a remote server it additionally locks port `53317` to the Tailscale
+interface in the firewall (`ufw`), so the box is reachable over your tailnet only —
+not the open internet. Non-interactive installs (e.g. piped `curl | bash`) default
+to local; force a choice with `OMARCHY_SEND_MODE=local` or `OMARCHY_SEND_MODE=remote`.
 
 > The installer is a short shell script fetched over HTTPS; read it first if you
 > prefer — it lives at [`install.sh`](install.sh) in this repo.
@@ -111,6 +122,27 @@ Staging a folder sends it whole (its structure is recreated on the receiver).
 Matching is case-insensitive, and noisy directories (`.git`, `node_modules`,
 caches, dotfiles…) are skipped to keep the index fast.
 
+### Remote devices (over Tailscale)
+
+Multicast discovery only finds peers on the same LAN. To send to / receive from a
+box elsewhere, omarchy-send probes it directly over unicast — which works over
+anything routable, [Tailscale](https://tailscale.com) being the easy, secure choice
+(stable addresses, end-to-end encryption, no port-forwarding):
+
+1. `tailscale up` on both devices (one-time).
+2. Either let omarchy-send **auto-discover** online tailnet peers (it probes them
+   every few seconds; any running omarchy-send/LocalSend appears in Devices), or
+   press **`+`** on the Devices tab and enter a host, IP, or Tailscale name (e.g.
+   `colossus`). Added devices are saved to `knownPeers` in the config and re-probed
+   on every launch.
+
+The receiver already listens on all interfaces, so it's reachable at its Tailscale
+IP with nothing else to configure. Sending and receiving both work, because the
+probe is a two-way handshake (each side learns the other).
+
+> On a box with a public IP, don't leave `53317` open to the internet — install in
+> **remote** mode (above) to firewall it to the tailnet, and/or set a `--pin`.
+
 ### Right-click send (Nautilus)
 
 On an Omarchy desktop, the installer adds a **"Send via Omarchy-Send"** entry to
@@ -154,7 +186,7 @@ omarchy-send --auto-accept --pin 2468
 ### Keys
 
 - `1`–`5` or `tab` — switch between Devices / Transfers / Manage / Messages / Settings
-- Peers: `enter` send to the selected peer · `m` message · `v` send clipboard · `r` refresh · `/` filter
+- Peers: `enter` send to the selected peer · `m` message · `v` send clipboard · `+` add a remote device · `r` refresh · `/` filter
 - PIN-protected peers: messages prompt for the PIN and retry, just like file sends
 - Send finder: type to fuzzy-filter · `enter` stage file/folder · `ctrl+d` folders-only · `ctrl+s` send · `ctrl+u` up a dir · `esc` back
 - Incoming prompt: `y` accept · `n` reject

@@ -295,6 +295,61 @@ func (d *Discoverer) reply(ip string, port int, proto string) {
 	_ = resp.Body.Close()
 }
 
+// Probe contacts host directly over unicast — bypassing multicast — and records
+// it as a peer on success. It POSTs our info to the peer's /register (so the
+// peer also learns us) and reads the peer's info from the reply. host may carry
+// a port; otherwise the default LocalSend port is used. https is tried first,
+// then http. Used for known/remote peers (e.g. reached over Tailscale) that
+// multicast can't find. Re-probing a live peer refreshes its LastSeen so it is
+// not reaped; a peer that stops answering ages out normally.
+func (d *Discoverer) Probe(ctx context.Context, host string) error {
+	h, port := hostPort(host)
+	body, err := json.Marshal(d.selfCopy().WithAnnounce(false))
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, scheme := range []string{"https", "http"} {
+		url := fmt.Sprintf("%s://%s/api/localsend/v2/register", scheme, net.JoinHostPort(h, strconv.Itoa(port)))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := d.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var info protocol.DeviceInfo
+		derr := json.NewDecoder(resp.Body).Decode(&info)
+		_ = resp.Body.Close()
+		if derr != nil || info.Fingerprint == "" {
+			lastErr = fmt.Errorf("probe %s: no usable device info", url)
+			continue
+		}
+		dbg.Logf("probe %s -> alias=%q fp=%s", url, info.Alias, info.Fingerprint)
+		d.NotePeer(info, h) // reach it back at the host we dialed
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("could not reach %s", host)
+	}
+	return lastErr
+}
+
+// hostPort splits an optional :port off host, defaulting to the LocalSend port.
+// It handles bare IPv6 by requiring the [::]:port form for a custom port.
+func hostPort(host string) (string, int) {
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return h, n
+		}
+		return h, protocol.DefaultPort
+	}
+	return host, protocol.DefaultPort
+}
+
 // NotePeer records a peer (from multicast or from an inbound /register) and
 // emits PeerFound on first sight or when its address changes. Safe for
 // concurrent use; ignores our own fingerprint.
