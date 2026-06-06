@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"omarchy-send/internal/protocol"
 )
@@ -43,6 +44,44 @@ func TestProbeRegistersPeer(t *testing.T) {
 	}
 	if wantIP := strings.Split(host, ":")[0]; peers[0].IP != wantIP {
 		t.Errorf("peer IP = %q, want %q (the host we dialed)", peers[0].IP, wantIP)
+	}
+}
+
+// TestFindPeerViaProbe covers the headless-send path for remote peers: a peer
+// that multicast can't see (here: only reachable by unicast Probe) must still
+// satisfy a FindPeer that is already waiting — Probe → NotePeer → PeerFound.
+func TestFindPeerViaProbe(t *testing.T) {
+	peerInfo := protocol.DeviceInfo{Alias: "titan-box", Fingerprint: "titan-fp", Port: 53317, Protocol: "http"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/localsend/v2/register", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(peerInfo)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	d := New(protocol.DeviceInfo{Fingerprint: "self-fp", Alias: "Self"})
+
+	// Probe concurrently, like watchRemotes does while FindPeer waits.
+	go func() {
+		if err := d.Probe(context.Background(), host); err != nil {
+			t.Errorf("Probe failed: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	got, err := d.FindPeer(ctx, func(p Peer) bool {
+		return strings.EqualFold(strings.TrimSpace(p.Info.Alias), "titan-box")
+	})
+	if err != nil {
+		t.Fatalf("FindPeer did not see the probed peer: %v", err)
+	}
+	if got.Info.Fingerprint != "titan-fp" {
+		t.Errorf("fingerprint = %q, want titan-fp", got.Info.Fingerprint)
+	}
+	if wantIP := strings.Split(host, ":")[0]; got.IP != wantIP {
+		t.Errorf("peer IP = %q, want %q (the host probed)", got.IP, wantIP)
 	}
 }
 

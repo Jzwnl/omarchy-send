@@ -111,11 +111,14 @@ omarchy-send --to "Strong Onion" --message "hi" --send-pin 2468   # if the peer 
 ```
 
 The target is matched against the peer's display name, case-insensitively. The
-command discovers the peer over multicast (waiting up to `--wait`, default 15s),
-sends the message, prints a one-line result, and exits non-zero if the peer
-isn't found or the send fails. It starts discovery only — not the receiver — so
-it's safe to run while another `omarchy-send` instance is up. Both `--to` and
-`--message` are required; file sending stays in the TUI for now.
+command discovers the peer over multicast and, like the TUI, directly probes
+your known peers and online Tailscale peers (waiting up to `--wait`, default
+15s) — so a remote box added with `+` in the TUI, or any tailnet peer, is a
+valid `--to` target from a script too. It sends the message, prints a one-line
+result, and exits non-zero if the peer isn't found or the send fails. It starts
+discovery only — not the receiver — so it's safe to run while another
+`omarchy-send` instance is up. Both `--to` and `--message` are required; file
+sending stays in the TUI for now.
 
 ### Sending files
 

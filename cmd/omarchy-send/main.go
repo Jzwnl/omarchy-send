@@ -337,6 +337,11 @@ func runHeadlessSend(cfg config.Config, target, message, sendPIN string, wait ti
 	}
 	disc.Announce() // solicit replies immediately rather than waiting a tick
 
+	// Multicast can't cross subnets or the tailnet, so also probe known peers
+	// and online Tailscale peers directly — same as the TUI's device list.
+	rem := &remotes{hosts: cfg.KnownPeers}
+	go watchRemotes(ctx, disc, rem)
+
 	want := strings.TrimSpace(target)
 	fmt.Fprintf(os.Stderr, "Looking for %q on the network (up to %s)…\n", want, wait)
 
@@ -353,7 +358,7 @@ func runHeadlessSend(cfg config.Config, target, message, sendPIN string, wait ti
 				fmt.Fprintf(os.Stderr, "  - %q (%s)\n", p.Info.Alias, p.IP)
 			}
 		} else {
-			fmt.Fprintln(os.Stderr, "No peers were seen at all — check you're on the same LAN and the target is running omarchy-send / LocalSend.")
+			fmt.Fprintln(os.Stderr, "No peers were seen at all — check the target is running omarchy-send / LocalSend on the same LAN, or is reachable as a known peer / over Tailscale.")
 		}
 		return 1
 	}
