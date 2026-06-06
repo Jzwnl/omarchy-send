@@ -305,6 +305,16 @@ foreground TUI, not a background daemon. Start it with:
 On a headless box, run it inside a TTY (tmux, or `ssh -t`). It listens on TCP
 port **53317**. Auto-accept and an optional PIN live in the config / Settings tab.
 
+**You can SEND messages from the CLI** — no TUI, no TTY, works from scripts and
+agents. To message another device (e.g. to notify the user on their desktop):
+
+    omarchy-send -to "<device alias>" -message "<text>"
+
+Add `-send-pin <pin>` if the target requires a PIN, and `-wait 30s` to allow
+longer for discovery. Works over the LAN and Tailscale alike; exit code 0 means
+delivered. To send files, pass paths instead (`omarchy-send <file>…`) — that
+opens the TUI with them staged, so it needs a TTY.
+
 **Config:** `~/.config/omarchy-send/config.json`
 (keys: `alias`, `receiveDir`, `port`, `autoAccept`, `pin`, `knownPeers`, …).
 
@@ -334,7 +344,10 @@ land in `@@RECV_DIR@@`** (authoritative: the `receiveDir` key in
 `~/.config/omarchy-send/config.json`). Files still transferring carry a `.part`
 suffix — skip them. Text messages appear in the TUI's Messages tab, not on disk.
 Receiving requires the TUI running (`omarchy-send`; use tmux or `ssh -t` when
-headless). Full notes: `~/.config/omarchy-send/AGENTS.md`.
+headless). **You can SEND a message to another device from the CLI** (no TUI/TTY,
+fine for scripts and agents): `omarchy-send -to "<alias>" -message "<text>"`
+(plus `-send-pin <pin>` if the target requires one); exit 0 = delivered. Works
+over LAN and Tailscale. Full notes: `~/.config/omarchy-send/AGENTS.md`.
 <!-- END omarchy-send (managed by installer) -->
 BLK
 sed -i "s|@@RECV_DIR@@|$RECV_DIR|g" "$blk"
@@ -451,6 +464,36 @@ if [ "$MODE" != "remote" ] && [ -n "$PUBLIC_IP" ]; then
   echo "   And/or set a PIN:  omarchy-send --pin <code>"
   echo "   Verify with an app-layer probe (raw TCP/nc lie behind some providers):"
   echo "     curl -sk https://<public-ip>:$PORT/api/localsend/v2/info   # should time out"
+fi
+
+# ---- userspace-networking Tailscale: outbound proxy check -----------------
+# Under tailscaled --tun=userspace-networking (no TUN device — the default in
+# unprivileged containers), processes cannot dial OUT to tailnet addresses at
+# all; tailscaled's SOCKS5 proxy is the only outbound path. omarchy-send
+# auto-detects and uses it at localhost:1055 — so check it's there and say
+# exactly what to do when it isn't (receive works either way; send doesn't).
+if command -v tailscale >/dev/null 2>&1 && [ -z "$TS_IFACE" ] \
+  && tailscale status >/dev/null 2>&1; then
+  if (exec 3<>/dev/tcp/127.0.0.1/1055) 2>/dev/null; then
+    exec 3>&- || true
+    echo
+    echo "==> Userspace-networking Tailscale detected; SOCKS5 proxy found at"
+    echo "    localhost:1055 — sends to tailnet devices will route through it"
+    echo "    automatically. Nothing to do."
+  else
+    echo
+    echo "⚠  Tailscale is running in userspace-networking mode (no TUN interface)"
+    echo "   and no SOCKS5 proxy is listening on localhost:1055. This box can"
+    echo "   RECEIVE over the tailnet, but CANNOT SEND to tailnet devices until"
+    echo "   tailscaled is restarted with its proxy enabled — add this flag to"
+    echo "   however tailscaled is launched (entrypoint, unit, …), keeping the"
+    echo "   existing --state/--socket flags:"
+    echo
+    echo "       tailscaled --tun=userspace-networking --socks5-server=localhost:1055 …"
+    echo
+    echo "   omarchy-send then uses the proxy automatically — no env vars needed."
+    echo "   (Explicit HTTPS_PROXY/HTTP_PROXY/NO_PROXY are honoured as overrides.)"
+  fi
 fi
 
 echo
