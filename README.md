@@ -153,6 +153,25 @@ The receiver already listens on all interfaces, so it's reachable at its Tailsca
 IP with nothing else to configure. Sending and receiving both work, because the
 probe is a two-way handshake (each side learns the other).
 
+#### Containers / userspace-networking tailscaled
+
+When tailscaled runs with `--tun=userspace-networking` (typical in unprivileged
+containers — no TUN device), processes cannot dial tailnet addresses directly;
+outbound tailnet traffic only works through tailscaled's built-in SOCKS5 proxy.
+omarchy-send handles this automatically: when the box has no tailnet address on
+a local interface but a proxy answers at `localhost:1055`, connections to
+`100.64.0.0/10` destinations are routed through it — LAN traffic is never
+proxied, and explicit `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables override
+the auto-detection. The one thing the box must provide is the proxy itself:
+
+```sh
+tailscaled --tun=userspace-networking --socks5-server=localhost:1055 …
+```
+
+Note that inbound connections on such boxes appear to come from `127.0.0.1`
+(tailscaled re-dials loopback); omarchy-send keeps a peer's routable address
+rather than letting those registers overwrite it.
+
 #### Public-IP boxes: firewall the port
 
 The receiver binds **all interfaces**, so on a box with a public IP, port `53317`

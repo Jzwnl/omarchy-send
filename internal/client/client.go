@@ -27,6 +27,7 @@ import (
 	"omarchy-send/internal/discovery"
 	"omarchy-send/internal/protocol"
 	"omarchy-send/internal/transfer"
+	"omarchy-send/internal/tsproxy"
 )
 
 // errOpen wraps a failure to open a source file, so the send loop can skip just
@@ -60,6 +61,10 @@ func New(self protocol.DeviceInfo) *Sender {
 			// and waiting for response headers after the body is sent.
 			Timeout: 0,
 			Transport: &http.Transport{
+				// Proxy env vars + tailnet SOCKS5 auto-detection (see
+				// discovery) so transfers also work from userspace-networking
+				// Tailscale boxes.
+				Proxy:                 tsproxy.ProxyFunc,
 				TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
 				TLSHandshakeTimeout:   10 * time.Second,

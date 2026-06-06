@@ -18,6 +18,7 @@ import (
 
 	"omarchy-send/internal/dbg"
 	"omarchy-send/internal/protocol"
+	"omarchy-send/internal/tsproxy"
 )
 
 // EventKind distinguishes peer lifecycle events.
@@ -73,6 +74,11 @@ func New(self protocol.DeviceInfo) *Discoverer {
 		client: &http.Client{
 			Timeout: 3 * time.Second,
 			Transport: &http.Transport{
+				// Proxy env vars are honoured like the default transport, and
+				// tailnet destinations are auto-routed through the local
+				// tailscaled SOCKS5 proxy on userspace-networking boxes (no
+				// TUN), where direct outbound tailnet dials cannot work.
+				Proxy:           tsproxy.ProxyFunc,
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		},
@@ -338,6 +344,12 @@ func (d *Discoverer) Probe(ctx context.Context, host string) error {
 	return lastErr
 }
 
+// isLoopback reports whether ip parses as a loopback address (e.g. 127.0.0.1).
+func isLoopback(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && p.IsLoopback()
+}
+
 // hostPort splits an optional :port off host, defaulting to the LocalSend port.
 // It handles bare IPv6 by requiring the [::]:port form for a custom port.
 func hostPort(host string) (string, int) {
@@ -361,7 +373,13 @@ func (d *Discoverer) NotePeer(info protocol.DeviceInfo, ip string) {
 
 	d.mu.Lock()
 	prev, existed := d.peers[info.Fingerprint]
-	changed := !existed || prev.IP != ip || prev.Info.Alias != info.Alias
+	// Never downgrade a routable address to loopback: behind a
+	// userspace-networking tailscaled, inbound registers all appear to come
+	// from 127.0.0.1 — recording that would make us "reply" to ourselves.
+	if existed && isLoopback(ip) && !isLoopback(prev.IP) {
+		peer.IP = prev.IP
+	}
+	changed := !existed || prev.IP != peer.IP || prev.Info.Alias != info.Alias
 	d.peers[info.Fingerprint] = peer
 	d.mu.Unlock()
 

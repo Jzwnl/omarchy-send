@@ -93,6 +93,32 @@ func TestProbeUnreachableErrors(t *testing.T) {
 	}
 }
 
+// A register arriving via a userspace-networking tailscaled proxy appears to
+// come from 127.0.0.1; that must not overwrite a peer's known routable address
+// (sending to it would loop back to our own receiver).
+func TestNotePeerKeepsRoutableOverLoopback(t *testing.T) {
+	d := New(protocol.DeviceInfo{Fingerprint: "self-fp"})
+	info := protocol.DeviceInfo{Alias: "gav", Fingerprint: "gav-fp", Port: 53317}
+
+	d.NotePeer(info, "100.91.41.111")
+	d.NotePeer(info, "127.0.0.1") // inbound register through the local proxy
+	if got := d.Snapshot()[0].IP; got != "100.91.41.111" {
+		t.Errorf("IP downgraded to %q, want 100.91.41.111 kept", got)
+	}
+
+	// A first sight at loopback is still recorded (nothing better known)…
+	d2 := New(protocol.DeviceInfo{Fingerprint: "self-fp"})
+	d2.NotePeer(info, "127.0.0.1")
+	if got := d2.Snapshot()[0].IP; got != "127.0.0.1" {
+		t.Errorf("first-sight IP = %q, want 127.0.0.1", got)
+	}
+	// …and upgrades to the routable address as soon as one is learned.
+	d2.NotePeer(info, "100.91.41.111")
+	if got := d2.Snapshot()[0].IP; got != "100.91.41.111" {
+		t.Errorf("IP = %q, want upgrade to 100.91.41.111", got)
+	}
+}
+
 func TestHostPortDefaults(t *testing.T) {
 	if h, p := hostPort("colossus"); h != "colossus" || p != protocol.DefaultPort {
 		t.Errorf("hostPort(bare) = %q,%d; want colossus,%d", h, p, protocol.DefaultPort)
