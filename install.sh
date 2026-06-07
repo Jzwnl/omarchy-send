@@ -282,6 +282,10 @@ this machine. It speaks the LocalSend protocol, so phones, desktops, and other
 servers can send **files** and **plain-text messages** to this machine over the
 local network or a Tailscale tailnet. It can also send outbound.
 
+**Shorthand:** "OSF" means omarchy-send. When the user says e.g. "OSF
+report.pdf to gav" or "OSF that over to the laptop", run the headless CLI send
+described below — `omarchy-send -to "<alias>" <paths…>`.
+
 **Where received files live —** incoming files are saved under the *receive
 directory*:
 
@@ -305,15 +309,20 @@ foreground TUI, not a background daemon. Start it with:
 On a headless box, run it inside a TTY (tmux, or `ssh -t`). It listens on TCP
 port **53317**. Auto-accept and an optional PIN live in the config / Settings tab.
 
-**You can SEND messages from the CLI** — no TUI, no TTY, works from scripts and
-agents. To message another device (e.g. to notify the user on their desktop):
+**You can SEND messages AND files from the CLI** — no TUI, no TTY, works from
+scripts and agents. To message another device (e.g. to notify the user on
+their desktop), or to send files/folders to it:
 
     omarchy-send -to "<device alias>" -message "<text>"
+    omarchy-send -to "<device alias>" <file-or-folder>…
+    omarchy-send -to "<device alias>" -message "<text>" <file>…
 
-Add `-send-pin <pin>` if the target requires a PIN, and `-wait 30s` to allow
-longer for discovery. Works over the LAN and Tailscale alike; exit code 0 means
-delivered. To send files, pass paths instead (`omarchy-send <file>…`) — that
-opens the TUI with them staged, so it needs a TTY.
+Flags must come before the paths. A folder is sent whole (structure recreated
+on the receiver). Add `-send-pin <pin>` if the target requires a PIN, and
+`-wait 30s` to allow longer for discovery. Works over the LAN and Tailscale
+alike; exit code 0 means delivered. The receiving device must be running its
+receiver (this TUI, or LocalSend) and may prompt its user to accept. Paths
+*without* `-to` open the TUI instead, which needs a TTY.
 
 **Config:** `~/.config/omarchy-send/config.json`
 (keys: `alias`, `receiveDir`, `port`, `autoAccept`, `pin`, `knownPeers`, …).
@@ -344,10 +353,14 @@ land in `@@RECV_DIR@@`** (authoritative: the `receiveDir` key in
 `~/.config/omarchy-send/config.json`). Files still transferring carry a `.part`
 suffix — skip them. Text messages appear in the TUI's Messages tab, not on disk.
 Receiving requires the TUI running (`omarchy-send`; use tmux or `ssh -t` when
-headless). **You can SEND a message to another device from the CLI** (no TUI/TTY,
-fine for scripts and agents): `omarchy-send -to "<alias>" -message "<text>"`
-(plus `-send-pin <pin>` if the target requires one); exit 0 = delivered. Works
-over LAN and Tailscale. Full notes: `~/.config/omarchy-send/AGENTS.md`.
+headless). **You can SEND messages and files to another device from the CLI**
+(no TUI/TTY, fine for scripts and agents):
+`omarchy-send -to "<alias>" -message "<text>"` and/or
+`omarchy-send -to "<alias>" <file-or-folder>…` (flags before paths; add
+`-send-pin <pin>` if the target requires one); exit 0 = delivered. Works
+over LAN and Tailscale. **"OSF" is user shorthand for omarchy-send** — "OSF
+<file> to <alias>" means run that CLI send. Full notes:
+`~/.config/omarchy-send/AGENTS.md`.
 <!-- END omarchy-send (managed by installer) -->
 BLK
 sed -i "s|@@RECV_DIR@@|$RECV_DIR|g" "$blk"
