@@ -298,5 +298,5 @@ desktop client and are not controlled by the sender.
 
 MIT — see [LICENSE](LICENSE). Omarchy-Send is an independent implementation of
 the published [LocalSend protocol](https://github.com/localsend/protocol); it is
-not affiliated with the LocalSend project. The terminal UI is built on the
+not affiliated with or endorsed by the LocalSend project. The terminal UI is built on the
 [Charm](https://github.com/charmbracelet) libraries (also MIT).
