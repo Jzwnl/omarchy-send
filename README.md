@@ -1,8 +1,11 @@
-# Omarchy-Send (`omarchy-send`)
+# Omarchy-Send (`omarchy-send`) — Raspberry Pi Fork
+
+> **This is a fork of [28allday/omarchy-send](https://github.com/28allday/omarchy-send) adapted for Raspberry Pi.**
+> Tested on a Raspberry Pi 400 running Debian 13 (Trixie), aarch64. The upstream project targets Arch Linux / Omarchy; this fork tracks it while ensuring everything works on Raspberry Pi OS / Debian out of the box.
 
 A [LocalSend](https://localsend.org)-compatible file-transfer client with a
-**terminal UI**, built for headless Arch / Omarchy servers used over SSH — no
-desktop environment, no clipboard, no browser. It interoperates with the stock
+**terminal UI**, built for headless servers used over SSH — no desktop
+environment, no clipboard, no browser. It interoperates with the stock
 LocalSend mobile and desktop apps on the same LAN, including their default
 **encrypted (HTTPS)** mode.
 
@@ -77,8 +80,44 @@ changes your firewall without remote mode. See
 
 ## Build from source
 
+### Raspberry Pi (Debian / Raspberry Pi OS)
+
+Go is not included in a default Raspberry Pi OS install. Install it to your home directory (no `sudo` needed):
+
 ```sh
-git clone https://github.com/28allday/omarchy-send
+wget https://go.dev/dl/go1.26.4.linux-arm64.tar.gz
+mkdir -p ~/go-sdk && tar -C ~/go-sdk --strip-components=1 -xzf go1.26.4.linux-arm64.tar.gz
+echo 'export PATH=$PATH:$HOME/go-sdk/bin:$HOME/go/bin' >> ~/.bashrc && source ~/.bashrc
+```
+
+Then clone this fork and build:
+
+```sh
+git clone https://github.com/Jzwnl/omarchy-send ~/omarchy-send
+cd ~/omarchy-send
+go build -o omarchy-send ./cmd/omarchy-send
+./omarchy-send --help
+```
+
+Optional clipboard support — install one of these via `apt`:
+
+```sh
+sudo apt install xclip          # X11 sessions
+sudo apt install wl-clipboard   # Wayland sessions
+# or use tmux's paste buffer (no install needed) when running headless over SSH
+```
+
+To pull future upstream fixes:
+
+```sh
+git remote add upstream https://github.com/28allday/omarchy-send
+git fetch upstream && git merge upstream/main
+```
+
+### Other Linux
+
+```sh
+git clone https://github.com/Jzwnl/omarchy-send
 cd omarchy-send
 go build -o omarchy-send ./cmd/omarchy-send   # or: ./install.sh
 ```
